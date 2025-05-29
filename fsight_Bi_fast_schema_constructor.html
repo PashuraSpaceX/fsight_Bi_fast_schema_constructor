@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ClickHouse SQL Generator</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        textarea {
+            width: 100%;
+            height: 200px;
+            margin-bottom: 10px;
+        }
+        input[type="text"] {
+            width: 100%;
+            padding: 8px;
+            margin-bottom: 10px;
+        }
+        button {
+            padding: 10px 15px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            cursor: pointer;
+            margin: 10px 0;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        .hidden {
+            display: none;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+        th {
+            background-color: #f2f2f2;
+        }
+        .output {
+            background-color: #f5f5f5;
+            padding: 15px;
+            border-radius: 5px;
+            white-space: pre-wrap;
+            font-family: monospace;
+        }
+    </style>
+</head>
+<body>
+    <div id="step1">
+        <h1>Шаг 1: Введите SQL запрос</h1>
+        <p>Кластер:</p>
+        <input type="text" id="cluster_name" placeholder="Введите имя кластера" required>
+        <p>Схема:</p>
+        <input type="text" id="schema_name" placeholder="Введите имя схемы" required>
+        <p>Таблица:</p>
+        <input type="text" id="table_name" placeholder="Введите имя таблицы" required>
+        <p>Поле для ReplacingMergeTree (опционально):</p>
+        <input type="text" id="merge_tree_obj" placeholder="Например: hdp_load_dttm">
+        <p>SQL запрос:</p>
+        <textarea id="sql_query" placeholder="Введите SQL запрос, например:
+select 
+    balance,
+    report_dt,
+    client,
+    market,
+    region,
+    hdp_load_dttm
+from {schema}.{table_name}"></textarea>
+        <button onclick="parseSQL()">Вперед</button>
+    </div>
+
+    <div id="step2" class="hidden">
+        <h1>Шаг 2: Выберите измерения и факты</h1>
+        <table id="attributes_table">
+            <thead>
+                <tr>
+                    <th>Атрибут</th>
+                    <th>Измерение</th>
+                    <th>Факт</th>
+                </tr>
+            </thead>
+            <tbody id="attributes_body">
+                <!-- Сюда будут добавлены атрибуты -->
+            </tbody>
+        </table>
+        <button onclick="generateScripts()">Сгенерировать скрипты</button>
+    </div>
+
+    <div id="step3" class="hidden">
+        <h1>Результат</h1>
+        <div class="output" id="output_scripts"></div>
+        <button onclick="copyToClipboard()">Копировать в буфер обмена</button>
+        <button onclick="resetForm()">Начать заново</button>
+    </div>
+
+    <script>
+        let attributes = [];
+        let schema = '';
+        let table = '';
+        let cluster = '';
+        let mergeTreeObj = '';
+
+        function parseSQL() {
+            const sql = document.getElementById('sql_query').value;
+            cluster = document.getElementById('cluster_name').value.trim();
+            schema = document.getElementById('schema_name').value.trim();
+            table = document.getElementById('table_name').value.trim();
+            mergeTreeObj = document.getElementById('merge_tree_obj').value.trim();
+            
+            if (!cluster || !schema || !table) {
+                alert('Пожалуйста, заполните все обязательные поля');
+                return;
+            }
+
+            // Простая парсинг SQL для извлечения колонок
+            const columnMatches = sql.match(/[,\s]\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*(?:,|$)/g);
+            
+            if (!columnMatches) {
+                alert('Не удалось извлечь атрибуты из SQL запроса');
+                return;
+            }
+
+            attributes = columnMatches.map(col => {
+                return col.replace(/[,\s]/g, '').trim();
+            }).filter(col => col && col !== 'from' && col !== 'select');
+
+            // Удаляем дубликаты
+            attributes = [...new Set(attributes)];
+
+            // Заполняем таблицу атрибутов
+            const tbody = document.getElementById('attributes_body');
+            tbody.innerHTML = '';
+            
+            attributes.forEach(attr => {
+                const row = document.createElement('tr');
+                
+                const tdAttr = document.createElement('td');
+                tdAttr.textContent = attr;
+                row.appendChild(tdAttr);
+                
+                const tdDimension = document.createElement('td');
+                const checkboxDim = document.createElement('input');
+                checkboxDim.type = 'checkbox';
+                checkboxDim.dataset.attr = attr;
+                checkboxDim.dataset.type = 'dimension';
+                tdDimension.appendChild(checkboxDim);
+                row.appendChild(tdDimension);
+                
+                const tdFact = document.createElement('td');
+                const checkboxFact = document.createElement('input');
+                checkboxFact.type = 'checkbox';
+                checkboxFact.dataset.attr = attr;
+                checkboxFact.dataset.type = 'fact';
+                tdFact.appendChild(checkboxFact);
+                row.appendChild(tdFact);
+                
+                tbody.appendChild(row);
+            });
+
+            // Переходим к шагу 2
+            document.getElementById('step1').classList.add('hidden');
+            document.getElementById('step2').classList.remove('hidden');
+        }
+
+        function generateScripts() {
+            const dimensions = [];
+            const facts = [];
+            
+            // Собираем выбранные измерения и факты
+            document.querySelectorAll('#attributes_table input[type="checkbox"]:checked').forEach(checkbox => {
+                const attr = checkbox.dataset.attr;
+                if (checkbox.dataset.type === 'dimension') {
+                    dimensions.push(attr);
+                } else {
+                    facts.push(attr);
+                }
+            });
+
+            // Генерируем скрипты для измерений
+            let dimensionScripts = '';
+            dimensions.forEach(dim => {
+                dimensionScripts += `-- Создание материализованного представления для измерения ${dim}
+create materialized view ${schema}.${table}_${dim} on cluster ${cluster}
+engine = ReplacingMergeTree(${mergeTreeObj || 'hdp_load_dttm'})
+order by (issue_${dim}_id)
+as
+select
+    row_number() over (order by ${dim}) as issue_${dim}_id,
+    ${mergeTreeObj || 'hdp_load_dttm'},
+    ${dim}
+from ${schema}.${table}
+group by 2, 3;
+
+`;
+            });
+
+            // Генерируем финальный скрипт с фактами и измерениями
+            let factScript = `-- Создание финального представления с фактами и измерениями
+create view ${schema}.${table}_fact on cluster ${cluster} as
+select distinct 
+    ${facts.length > 0 ? facts.join(',\n    ') : '/* Укажите факты */'}`;
+
+            // Добавляем измерения в SELECT
+            dimensions.forEach((dim, index) => {
+                const alias = String.fromCharCode(97 + index); // a, b, c, ...
+                factScript += `,\n    ${alias}.issue_${dim}_id`;
+            });
+
+            factScript += `\nfrom (select * from ${schema}.${table} final) tgt\n`;
+
+            // Добавляем JOIN для измерений
+            dimensions.forEach((dim, index) => {
+                const alias = String.fromCharCode(97 + index); // a, b, c, ...
+                factScript += `left join (select * from ${schema}.${table}_${dim} final) as ${alias} 
+    on tgt.${dim} = ${alias}.${dim}\n`;
+            });
+
+            factScript += ';';
+
+            // Показываем результат
+            document.getElementById('output_scripts').textContent = dimensionScripts + factScript;
+            document.getElementById('step2').classList.add('hidden');
+            document.getElementById('step3').classList.remove('hidden');
+        }
+
+        function copyToClipboard() {
+            const output = document.getElementById('output_scripts');
+            const range = document.createRange();
+            range.selectNode(output);
+            window.getSelection().removeAllRanges();
+            window.getSelection().addRange(range);
+            document.execCommand('copy');
+            window.getSelection().removeAllRanges();
+            alert('Скрипты скопированы в буфер обмена');
+        }
+
+        function resetForm() {
+            document.getElementById('step3').classList.add('hidden');
+            document.getElementById('step1').classList.remove('hidden');
+            document.getElementById('sql_query').value = '';
+            document.getElementById('cluster_name').value = '';
+            document.getElementById('schema_name').value = '';
+            document.getElementById('table_name').value = '';
+            document.getElementById('merge_tree_obj').value = '';
+            attributes = [];
+        }
+    </script>
+</body>
+</html>
